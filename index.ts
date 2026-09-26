@@ -1,105 +1,90 @@
-import { type Message, Ollama, type Tool } from 'ollama'
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models'
+import { type BaseMessage, HumanMessage, ToolMessage } from '@langchain/core/messages'
+import { tool } from '@langchain/core/tools'
+import { ChatOllama } from '@langchain/ollama'
+import * as z from 'zod'
+
+type ToolCallingModel = BaseChatModel & {
+  bindTools: NonNullable<BaseChatModel['bindTools']>
+}
 
 type ToolName = 'add' | 'multiply'
 
-function add(a: number, b: number): number {
-  return a + b
+const numberPair = {
+  a: z.number().int().describe('The first number'),
+  b: z.number().int().describe('The second number'),
 }
 
-function multiply(a: number, b: number): number {
-  return a * b
-}
+const add = tool(({ a, b }: { a: number; b: number }) => a + b, {
+  name: 'add',
+  description: 'Add two numbers',
+  schema: z.object(numberPair),
+})
 
-const availableFunctions: Record<ToolName, (a: number, b: number) => number> = {
+const multiply = tool(({ a, b }: { a: number; b: number }) => a * b, {
+  name: 'multiply',
+  description: 'Multiply two numbers',
+  schema: z.object(numberPair),
+})
+
+const tools = [add, multiply]
+
+const toolsByName: Record<ToolName, typeof add | typeof multiply> = {
   add,
   multiply,
 }
 
-const tools: Tool[] = [
-  {
-    type: 'function',
-    function: {
-      name: 'add',
-      description: 'Add two numbers',
-      parameters: {
-        type: 'object',
-        required: ['a', 'b'],
-        properties: {
-          a: { type: 'integer', description: 'The first number' },
-          b: { type: 'integer', description: 'The second number' },
-        },
-      },
-    },
-  },
-  {
-    type: 'function',
-    function: {
-      name: 'multiply',
-      description: 'Multiply two numbers',
-      parameters: {
-        type: 'object',
-        required: ['a', 'b'],
-        properties: {
-          a: { type: 'integer', description: 'The first number' },
-          b: { type: 'integer', description: 'The second number' },
-        },
-      },
-    },
-  },
-]
+function isToolName(name: string): name is ToolName {
+  return Object.hasOwn(toolsByName, name)
+}
 
 const defaultHost = 'http://127.0.0.1:11434'
 
-export type ChatClient = {
-  chat: (request: {
-    model: string
-    messages: Message[]
-    tools: Tool[]
-    think: boolean
-  }) => Promise<{ message: Message }>
+export function createChatModel(baseUrl: string): ChatOllama {
+  return new ChatOllama({
+    model: 'qwen3.8',
+    baseUrl,
+    think: true,
+  })
 }
 
-export async function agentLoop(client: ChatClient): Promise<void> {
-  const messages: Message[] = [{ role: 'user', content: 'What is (11434+12341)*412?' }]
+export async function agentLoop(model: ToolCallingModel): Promise<void> {
+  const messages: BaseMessage[] = [new HumanMessage('What is (11434+12341)*412?')]
+  const modelWithTools = model.bindTools(tools)
 
   while (true) {
-    const response = await client.chat({
-      model: 'qwen3.8',
-      messages,
-      tools,
-      think: true,
-    })
+    const response = await modelWithTools.invoke(messages)
+    messages.push(response)
 
-    messages.push(response.message)
-    console.log('Thinking:', response.message.thinking)
-    console.log('Content:', response.message.content)
+    console.log('Thinking:', response.additional_kwargs.reasoning_content)
+    console.log('Content:', response.content)
 
-    const toolCalls = response.message.tool_calls ?? []
-    if (toolCalls.length) {
-      for (const call of toolCalls) {
-        const fn = availableFunctions[call.function.name as ToolName]
-        if (!fn) {
-          continue
-        }
-
-        const args = call.function.arguments as { a: number; b: number }
-        console.log(`Calling ${call.function.name} with arguments`, args)
-        const result = fn(args.a, args.b)
-        console.log(`Result: ${result}`)
-        messages.push({
-          role: 'tool',
-          tool_name: call.function.name,
-          content: String(result),
-        })
-      }
-    } else {
+    const toolCalls = response.tool_calls ?? []
+    if (toolCalls.length === 0) {
       break
+    }
+
+    for (const call of toolCalls) {
+      if (!isToolName(call.name)) {
+        continue
+      }
+
+      const args = call.args as { a: number; b: number }
+      console.log(`Calling ${call.name} with arguments`, args)
+      const result = await toolsByName[call.name].invoke(args)
+      console.log(`Result: ${result}`)
+      messages.push(
+        new ToolMessage({
+          content: String(result),
+          tool_call_id: call.id ?? call.name,
+          name: call.name,
+        }),
+      )
     }
   }
 }
 
 if (import.meta.main) {
-  const host = Deno.env.get('OLLAMA_HOST') || defaultHost
-  const client = new Ollama({ host })
-  agentLoop(client).catch(console.error)
+  const baseUrl = Deno.env.get('OLLAMA_HOST') || defaultHost
+  agentLoop(createChatModel(baseUrl)).catch(console.error)
 }
