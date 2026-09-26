@@ -1,7 +1,7 @@
 # Agent
 
-Local Ollama tool-calling loop. It asks `qwen3.8` to compute `(11434+12341)*412` with `add` and
-`multiply`.
+Local Ollama tool-calling loop, built with LangChain.js (`ChatOllama` and `tool`). It asks `qwen3.8`
+to compute `(11434+12341)*412` with `add` and `multiply`.
 
 ## Prerequisites
 
@@ -16,8 +16,8 @@ deno task start
 
 `deno task dev` runs the same loop with `--watch`.
 
-The client uses `http://127.0.0.1:11434` unless `OLLAMA_HOST` is set (a host:port or a full URL both
-work):
+The model uses `http://127.0.0.1:11434` unless `OLLAMA_HOST` is set (a host:port or a full URL both
+work). That value is passed to `ChatOllama` as `baseUrl`:
 
 ```sh
 OLLAMA_HOST=http://127.0.0.1:11434 deno task start
